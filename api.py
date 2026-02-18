@@ -209,11 +209,12 @@ def honeypot_heuristic(buys24: int, sells24: int, volume24: float, liquidity: fl
     if b + s < 30:
         signals.append("거래 샘플 적음(판단 유보)")
         score += 2
-        return False, score, signals
+        level = "LOW"
+        return False, score, signals, level
 
     ratio = s / max(1, b)
 
-    if ratio < 0.08 and b >= 80:
+    if ratio < 0.10 and b >= 80:
         score += 18
         signals.append(f"매수 대비 매도 비율 매우 낮음 (sells/buys={ratio:.2f})")
     elif ratio < 0.15 and b >= 50:
@@ -235,8 +236,17 @@ def honeypot_heuristic(buys24: int, sells24: int, volume24: float, liquidity: fl
         signals.append(f"24h 급등인데 매도 부족 (24h={pc24:+.1f}%)")
 
     score = min(25, score)
-    suspected = score >= 18
-    return suspected, score, signals
+
+    if score >= 18:
+        level = "SUSPECTED"
+    elif score >= 10:
+        level = "WATCH"
+    else:
+        level = "LOW"
+
+    suspected = (level == "SUSPECTED")
+    return suspected, score, signals, level
+
 
 
 def analyze_token(contract: str, chain_id: str = "ethereum"):
@@ -265,7 +275,7 @@ def analyze_token(contract: str, chain_id: str = "ethereum"):
 
     risk = int(round(clamp(p1 + p2 + p3 + p4 + p5 + p6, 0, 100)))
 
-    honeypot_suspected, honeypot_score, honeypot_signals = honeypot_heuristic(
+    honeypot_suspected, honeypot_score, honeypot_signals, honeypot_level = honeypot_heuristic(
           buys24, sells24, V24, L, pc1, pc24
     )
     risk = min(100, risk + honeypot_score)
@@ -342,6 +352,7 @@ def analyze_token(contract: str, chain_id: str = "ethereum"):
         "honeypotSuspected": honeypot_suspected,
         "honeypotScore": honeypot_score,
         "honeypotSignals": honeypot_signals,
+        "honeypotLevel": honeypot_level,
     }
 
 
