@@ -3,7 +3,6 @@ from pydantic import BaseModel
 import requests
 import time
 import math
-from fastapi import Header
 import os
 
 app = FastAPI(title="AI Token Risk Engine", version="3.2")
@@ -303,10 +302,7 @@ def health():
 
 
 @app.post("/analyze")
-def analyze(req: AnalyzeRequest, x_api_key: str = Header(None)):
-    if x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API Key")
-
+def analyze(req: AnalyzeRequest):
     contract = req.contract.strip()
     chain_id = (req.chainId or "ethereum").strip()
     if not contract.startswith("0x") or len(contract) < 42:
