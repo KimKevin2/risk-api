@@ -41,65 +41,6 @@ def calc_pair_age_days(pair_created_at_ms):
         return None
     return age_days
 
-# -------- chain + address validation --------
-SUPPORTED_CHAINS = {
-    # EVM (DexScreener chainId commonly used)
-    "ethereum", "base", "arbitrum", "polygon", "bsc", "avalanche", "optimism",
-    # SVM
-    "solana",
-}
-
-CHAIN_ALIASES = {
-    "eth": "ethereum",
-    "arb": "arbitrum",
-    "matic": "polygon",
-    "bnb": "bsc",
-    "avax": "avalanche",
-    "op": "optimism",
-}
-
-_BASE58_ALPHABET = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
-
-
-def normalize_chain_id(chain_id: str | None) -> str:
-    cid = (chain_id or "ethereum").strip().lower()
-    cid = CHAIN_ALIASES.get(cid, cid)
-    if cid not in SUPPORTED_CHAINS:
-        raise HTTPException(status_code=400, detail=f"Unsupported chainId: {cid}")
-    return cid
-
-
-def is_evm_address(addr: str) -> bool:
-    a = (addr or "").strip()
-    return a.startswith("0x") and len(a) == 42
-
-
-def is_base58(s: str) -> bool:
-    if not s:
-        return False
-    return all(c in _BASE58_ALPHABET for c in s)
-
-
-def is_solana_address(addr: str) -> bool:
-    a = (addr or "").strip()
-    # Common Solana pubkey length: 32~44 chars base58 (practical guard)
-    if not (32 <= len(a) <= 44):
-        return False
-    return is_base58(a)
-
-
-def validate_contract_for_chain(contract: str, chain_id: str) -> str:
-    c = (contract or "").strip()
-    if chain_id == "solana":
-        if not is_solana_address(c):
-            raise HTTPException(status_code=400, detail="Invalid Solana address format.")
-        return c
-
-    # default: EVM-like
-    if not is_evm_address(c):
-        raise HTTPException(status_code=400, detail="Invalid EVM contract address format.")
-    return c
-
 
 # -------- Dexscreener data --------
 def fetch_token_pairs(chain_id: str, token_address: str):
@@ -252,61 +193,6 @@ def max_order_usd(liquidity_usd: float, action: str):
     frac = 0.001 if action == "WAIT" else 0.003
     return round(liquidity_usd * frac, 2)
 
-def honeypot_heuristic(buys24: int, sells24: int, volume24: float, liquidity: float,
-                       pc1: float | None, pc24: float | None):
-
-    signals = []
-    score = 0
-
-    b = max(0, int(buys24 or 0))
-    s = max(0, int(sells24 or 0))
-    V = float(volume24 or 0.0)
-    L = float(liquidity or 0.0)
-    pc1 = float(pc1 or 0.0)
-    pc24 = float(pc24 or 0.0)
-
-    if b + s < 30:
-        signals.append("거래 샘플 적음(판단 유보)")
-        score += 2
-        level = "LOW"
-        return False, score, signals, level
-
-    ratio = s / max(1, b)
-
-    if ratio < 0.10 and b >= 80:
-        score += 18
-        signals.append(f"매수 대비 매도 비율 매우 낮음 (sells/buys={ratio:.2f})")
-    elif ratio < 0.15 and b >= 50:
-        score += 12
-        signals.append(f"매수 대비 매도 비율 낮음 (sells/buys={ratio:.2f})")
-
-    if L > 0:
-        heat = V / L
-        if heat > 3.0 and ratio < 0.15:
-            score += 6
-            signals.append(f"과열 구간에서 매도 부족 (vol/liquidity={heat:.2f})")
-
-    if pc1 > 8 and ratio < 0.15:
-        score += 4
-        signals.append(f"단기 급등인데 매도 부족 (1h={pc1:+.1f}%)")
-
-    if pc24 > 40 and ratio < 0.20:
-        score += 4
-        signals.append(f"24h 급등인데 매도 부족 (24h={pc24:+.1f}%)")
-
-    score = min(25, score)
-
-    if score >= 18:
-        level = "SUSPECTED"
-    elif score >= 10:
-        level = "WATCH"
-    else:
-        level = "LOW"
-
-    suspected = (level == "SUSPECTED")
-    return suspected, score, signals, level
-
-
 
 def analyze_token(contract: str, chain_id: str = "ethereum"):
     pairs = fetch_token_pairs(chain_id, contract)
@@ -334,12 +220,6 @@ def analyze_token(contract: str, chain_id: str = "ethereum"):
 
     risk = int(round(clamp(p1 + p2 + p3 + p4 + p5 + p6, 0, 100)))
 
-    honeypot_suspected, honeypot_score, honeypot_signals, honeypot_level = honeypot_heuristic(
-          buys24, sells24, V24, L, pc1, pc24
-    )
-    risk = min(100, risk + honeypot_score)
-
-
     if risk <= 20:
         level = "LOW"
     elif risk <= 50:
@@ -354,7 +234,6 @@ def analyze_token(contract: str, chain_id: str = "ethereum"):
         "volatilityRisk": int(round(p4)),
         "fdvGapRisk": int(round(p5)),
         "newPairRisk": int(round(p6)),
-        "honeypotRisk": honeypot_score,
     }
 
     reasons = []
@@ -408,10 +287,6 @@ def analyze_token(contract: str, chain_id: str = "ethereum"):
         "priceChange24h": s["priceChange24h"],
         "fdv": s["fdv"],
         "url": s["url"],
-        "honeypotSuspected": honeypot_suspected,
-        "honeypotScore": honeypot_score,
-        "honeypotSignals": honeypot_signals,
-        "honeypotLevel": honeypot_level,
     }
 
 
@@ -428,37 +303,8 @@ def health():
 
 @app.post("/analyze")
 def analyze(req: AnalyzeRequest):
-    chain_id = normalize_chain_id(req.chainId)
-    contract = validate_contract_for_chain(req.contract, chain_id)
+    contract = req.contract.strip()
+    chain_id = (req.chainId or "ethereum").strip()
+    if not contract.startswith("0x") or len(contract) < 42:
+        raise HTTPException(status_code=400, detail="Invalid contract address format.")
     return analyze_token(contract, chain_id)
-
-@app.post("/quick-scan")
-def quick_scan(req: AnalyzeRequest):
-    chain_id = normalize_chain_id(req.chainId)
-    contract = validate_contract_for_chain(req.contract, chain_id)
-
-    result = analyze_token(contract, chain_id)
-    safe = result["riskScore"] <= 20 and not result["honeypotSuspected"]
-
-    return {
-        "safeToTrade": safe,
-        "riskScore": result["riskScore"],
-        "action": result["guidance"]["action"],
-        "maxOrderUsd": result["guidance"]["maxOrderUsd"],
-        "slippageBps": result["guidance"]["suggestedSlippageBps"],
-    }
-
-# --- ACP ultra-light endpoint (seller-facing) ---
-@app.post("/acp/crypto_quick_scan")
-def acp_crypto_quick_scan(req: AnalyzeRequest):
-    chain_id = normalize_chain_id(req.chainId)
-    contract = validate_contract_for_chain(req.contract, chain_id)
-
-    result = analyze_token(contract, chain_id)
-    safe = (result["riskScore"] <= 20) and (not result.get("honeypotSuspected", False))
-
-    return {
-        "safeToTrade": safe,
-        "riskScore": result["riskScore"],
-        "action": result["guidance"]["action"],
-    }
