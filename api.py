@@ -394,3 +394,24 @@ def quick_scan(req: AnalyzeRequest):
         "maxOrderUsd": result["guidance"]["maxOrderUsd"],
         "slippageBps": result["guidance"]["suggestedSlippageBps"],
     }
+
+# --- ACP ultra-light endpoint (seller-facing) ---
+@app.post("/acp/crypto_quick_scan")
+def acp_crypto_quick_scan(req: AnalyzeRequest):
+    contract = req.contract.strip()
+    chain_id = (req.chainId or "ethereum").strip()
+
+    if not contract.startswith("0x") or len(contract) < 42:
+        raise HTTPException(status_code=400, detail="Invalid contract address format.")
+
+    # reuse existing engine
+    result = analyze_token(contract, chain_id)
+
+    safe = (result["riskScore"] <= 20) and (not result.get("honeypotSuspected", False))
+
+    # minimal, machine-friendly response for ACP
+    return {
+        "safeToTrade": safe,
+        "riskScore": result["riskScore"],
+        "action": result["guidance"]["action"],
+    }
