@@ -374,3 +374,23 @@ def analyze(req: AnalyzeRequest):
     if not contract.startswith("0x") or len(contract) < 42:
         raise HTTPException(status_code=400, detail="Invalid contract address format.")
     return analyze_token(contract, chain_id)
+
+@app.post("/quick-scan")
+def quick_scan(req: AnalyzeRequest):
+    contract = req.contract.strip()
+    chain_id = (req.chainId or "ethereum").strip()
+
+    if not contract.startswith("0x") or len(contract) < 42:
+        raise HTTPException(status_code=400, detail="Invalid contract address format.")
+
+    result = analyze_token(contract, chain_id)
+
+    safe = result["riskScore"] <= 20 and not result["honeypotSuspected"]
+
+    return {
+        "safeToTrade": safe,
+        "riskScore": result["riskScore"],
+        "action": result["guidance"]["action"],
+        "maxOrderUsd": result["guidance"]["maxOrderUsd"],
+        "slippageBps": result["guidance"]["suggestedSlippageBps"],
+    }
